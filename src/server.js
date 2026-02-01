@@ -6,6 +6,8 @@ import path from "node:path";
 
 import express from "express";
 import httpProxy from "http-proxy";
+import pty from "node-pty";
+import { WebSocketServer } from "ws";
 
 const PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
 const STATE_DIR =
@@ -71,6 +73,16 @@ const GATEWAY_TARGET = `http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}
 const OPENCLAW_ENTRY =
   process.env.OPENCLAW_ENTRY?.trim() || "/openclaw/dist/entry.js";
 const OPENCLAW_NODE = process.env.OPENCLAW_NODE?.trim() || "node";
+
+const ENABLE_WEB_TUI = process.env.ENABLE_WEB_TUI?.toLowerCase() === "true";
+const TUI_IDLE_TIMEOUT_MS = Number.parseInt(
+  process.env.TUI_IDLE_TIMEOUT_MS ?? "300000",
+  10,
+);
+const TUI_MAX_SESSION_MS = Number.parseInt(
+  process.env.TUI_MAX_SESSION_MS ?? "1800000",
+  10,
+);
 
 function clawArgs(args) {
   return [OPENCLAW_ENTRY, ...args];
@@ -403,6 +415,7 @@ app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
     openclawVersion: version,
     channelsAddHelp: channelsHelp,
     authGroups,
+    tuiEnabled: ENABLE_WEB_TUI,
   });
 });
 
@@ -733,6 +746,127 @@ app.post("/setup/api/reset", requireSetupAuth, async (_req, res) => {
   }
 });
 
+app.get("/tui", requireSetupAuth, (_req, res) => {
+  if (!ENABLE_WEB_TUI) {
+    return res
+      .status(403)
+      .type("text/plain")
+      .send("Web TUI is disabled. Set ENABLE_WEB_TUI=true to enable it.");
+  }
+  if (!isConfigured()) {
+    return res.redirect("/setup");
+  }
+  res.sendFile(path.join(process.cwd(), "src", "public", "tui.html"));
+});
+
+let activeTuiSession = null;
+
+function verifyTuiAuth(req) {
+  if (!SETUP_PASSWORD) return false;
+  const header = req.headers.authorization || "";
+  const [scheme, encoded] = header.split(" ");
+  if (scheme !== "Basic" || !encoded) return false;
+  const decoded = Buffer.from(encoded, "base64").toString("utf8");
+  const idx = decoded.indexOf(":");
+  const password = idx >= 0 ? decoded.slice(idx + 1) : "";
+  const passwordHash = crypto.createHash("sha256").update(password).digest();
+  const expectedHash = crypto.createHash("sha256").update(SETUP_PASSWORD).digest();
+  return crypto.timingSafeEqual(passwordHash, expectedHash);
+}
+
+function createTuiWebSocketServer(httpServer) {
+  const wss = new WebSocketServer({ noServer: true });
+
+  wss.on("connection", (ws, req) => {
+    const clientIp = req.socket?.remoteAddress || "unknown";
+    console.log(`[tui] session started from ${clientIp}`);
+
+    const ptyProcess = pty.spawn(OPENCLAW_NODE, clawArgs(["tui"]), {
+      name: "xterm-256color",
+      cols: 80,
+      rows: 24,
+      cwd: WORKSPACE_DIR,
+      env: {
+        ...process.env,
+        OPENCLAW_STATE_DIR: STATE_DIR,
+        OPENCLAW_WORKSPACE_DIR: WORKSPACE_DIR,
+        TERM: "xterm-256color",
+      },
+    });
+
+    activeTuiSession = {
+      ws,
+      pty: ptyProcess,
+      startedAt: Date.now(),
+      lastActivity: Date.now(),
+    };
+
+    let idleTimer = setTimeout(() => {
+      console.log("[tui] session idle timeout");
+      ws.close(4002, "Idle timeout");
+    }, TUI_IDLE_TIMEOUT_MS);
+
+    const maxSessionTimer = setTimeout(() => {
+      console.log("[tui] max session duration reached");
+      ws.close(4002, "Max session duration");
+    }, TUI_MAX_SESSION_MS);
+
+    function resetIdleTimer() {
+      activeTuiSession.lastActivity = Date.now();
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        console.log("[tui] session idle timeout");
+        ws.close(4002, "Idle timeout");
+      }, TUI_IDLE_TIMEOUT_MS);
+    }
+
+    ptyProcess.onData((data) => {
+      if (ws.readyState === ws.OPEN) {
+        ws.send(data);
+      }
+    });
+
+    ptyProcess.onExit(({ exitCode, signal }) => {
+      console.log(`[tui] PTY exited code=${exitCode} signal=${signal}`);
+      if (ws.readyState === ws.OPEN) {
+        ws.close(1000, "Process exited");
+      }
+    });
+
+    ws.on("message", (message) => {
+      resetIdleTimer();
+      try {
+        const msg = JSON.parse(message.toString());
+        if (msg.type === "input" && msg.data) {
+          ptyProcess.write(msg.data);
+        } else if (msg.type === "resize" && msg.cols && msg.rows) {
+          const cols = Math.min(Math.max(msg.cols, 10), 500);
+          const rows = Math.min(Math.max(msg.rows, 5), 200);
+          ptyProcess.resize(cols, rows);
+        }
+      } catch (err) {
+        console.warn(`[tui] invalid message: ${err.message}`);
+      }
+    });
+
+    ws.on("close", () => {
+      console.log("[tui] session closed");
+      clearTimeout(idleTimer);
+      clearTimeout(maxSessionTimer);
+      try {
+        ptyProcess.kill();
+      } catch {}
+      activeTuiSession = null;
+    });
+
+    ws.on("error", (err) => {
+      console.error(`[tui] WebSocket error: ${err.message}`);
+    });
+  });
+
+  return wss;
+}
+
 const proxy = httpProxy.createProxyServer({
   target: GATEWAY_TARGET,
   ws: true,
@@ -781,6 +915,7 @@ app.use(async (req, res) => {
 const server = app.listen(PORT, () => {
   console.log(`[wrapper] listening on port ${PORT}`);
   console.log(`[wrapper] setup wizard: http://localhost:${PORT}/setup`);
+  console.log(`[wrapper] web TUI: ${ENABLE_WEB_TUI ? "enabled" : "disabled"}`);
   console.log(`[wrapper] configured: ${isConfigured()}`);
 
   if (isConfigured()) {
@@ -790,7 +925,36 @@ const server = app.listen(PORT, () => {
   }
 });
 
+const tuiWss = createTuiWebSocketServer(server);
+
 server.on("upgrade", async (req, socket, head) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+
+  if (url.pathname === "/tui/ws") {
+    if (!ENABLE_WEB_TUI) {
+      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    if (!verifyTuiAuth(req)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"OpenClaw TUI\"\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    if (activeTuiSession) {
+      socket.write("HTTP/1.1 409 Conflict\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    tuiWss.handleUpgrade(req, socket, head, (ws) => {
+      tuiWss.emit("connection", ws, req);
+    });
+    return;
+  }
+
   if (!isConfigured()) {
     socket.destroy();
     return;
@@ -810,6 +974,14 @@ async function gracefulShutdown(signal) {
 
   if (setupRateLimiter.cleanupInterval) {
     clearInterval(setupRateLimiter.cleanupInterval);
+  }
+
+  if (activeTuiSession) {
+    try {
+      activeTuiSession.ws.close(1001, "Server shutting down");
+      activeTuiSession.pty.kill();
+    } catch {}
+    activeTuiSession = null;
   }
 
   server.close();

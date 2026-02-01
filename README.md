@@ -6,6 +6,7 @@ This repo packages **OpenClaw** for Railway with a small **/setup** web wizard s
 
 - **OpenClaw Gateway + Control UI** (served at `/` and `/openclaw`)
 - A friendly **Setup Wizard** at `/setup` (protected by a password)
+- Optional **Web Terminal** at `/tui` for browser-based TUI access
 - Persistent state via **Railway Volume** (so config/credentials/memory survive redeploys)
 
 ## How it works (high level)
@@ -32,6 +33,36 @@ This repo packages **OpenClaw** for Railway with a small **/setup** web wizard s
 4. Copy the **Bot Token** and paste it into `/setup`
 5. Invite the bot to your server (OAuth2 URL Generator → scopes: `bot`, `applications.commands`; then choose permissions)
 
+## Web Terminal (TUI)
+
+The template includes an optional web-based terminal that runs `openclaw tui` in your browser.
+
+### Enabling
+
+Set `ENABLE_WEB_TUI=true` in your Railway Variables. The terminal is **disabled by default**.
+
+Once enabled, access it at `/tui` or via the "Open Terminal" button on the setup page.
+
+### Security
+
+The web TUI implements multiple security layers:
+
+| Control | Description |
+|---------|-------------|
+| **Opt-in only** | Disabled by default, requires explicit `ENABLE_WEB_TUI=true` |
+| **Password protected** | Uses the same `SETUP_PASSWORD` as the setup wizard |
+| **Single session** | Only 1 concurrent TUI session allowed at a time |
+| **Idle timeout** | Auto-closes after 5 minutes of inactivity (configurable via `TUI_IDLE_TIMEOUT_MS`) |
+| **Max duration** | Hard limit of 30 minutes per session (configurable via `TUI_MAX_SESSION_MS`) |
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_WEB_TUI` | `false` | Set to `true` to enable |
+| `TUI_IDLE_TIMEOUT_MS` | `300000` (5 min) | Closes session after inactivity |
+| `TUI_MAX_SESSION_MS` | `1800000` (30 min) | Maximum session duration |
+
 ## Local testing
 
 ```bash
@@ -40,10 +71,12 @@ docker build -t openclaw-railway-template .
 docker run --rm -p 8080:8080 \
   -e PORT=8080 \
   -e SETUP_PASSWORD=test \
+  -e ENABLE_WEB_TUI=true \
   -e OPENCLAW_STATE_DIR=/data/.openclaw \
   -e OPENCLAW_WORKSPACE_DIR=/data/workspace \
   -v $(pwd)/.tmpdata:/data \
   openclaw-railway-template
 
-# open http://localhost:8080/setup (password: test)
+# Setup wizard: http://localhost:8080/setup (password: test)
+# Web terminal: http://localhost:8080/tui (after setup)
 ```

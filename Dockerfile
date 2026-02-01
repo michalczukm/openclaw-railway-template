@@ -6,6 +6,8 @@ RUN apt-get update \
     curl \
     git \
     procps \
+    python3 \
+    build-essential \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g openclaw@latest

@@ -39,6 +39,7 @@
       pairingCode: '',
       showPairingModal: false,
       isReady: false,
+      tuiEnabled: false,
 
       get currentGroup() {
         return this.authGroups.find(g => g.value === this.selectedGroup);
@@ -64,6 +65,7 @@
           const j = await this.httpJson('/setup/api/status');
           this.configured = j.configured;
           this.openclawVersion = j.openclawVersion || '';
+          this.tuiEnabled = j.tuiEnabled || false;
           this.status = j.configured ? 'Configured - open /openclaw' : 'Not configured - run setup below';
           this.authGroups = j.authGroups || [];
           if (this.authGroups.length > 0) {
@@ -215,10 +217,14 @@
         </div>
         <span x-text="status" class="text-sm" :class="configured ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'"></span>
       </div>
-      <div x-show="configured" class="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-800">
+      <div x-show="configured" class="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-800 flex flex-wrap gap-4">
         <a href="/openclaw" target="_blank" class="inline-flex items-center gap-2 text-sm text-teal-600 dark:text-teal-400 hover:text-teal-500 dark:hover:text-teal-300 transition-colors">
           Open OpenClaw UI
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+        </a>
+        <a x-show="tuiEnabled" href="/tui" target="_blank" class="inline-flex items-center gap-2 text-sm text-purple-600 dark:text-purple-400 hover:text-purple-500 dark:hover:text-purple-300 transition-colors">
+          Open Terminal
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
         </a>
       </div>
     </div>
