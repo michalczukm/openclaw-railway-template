@@ -4,6 +4,12 @@ set -e
 chown -R openclaw:openclaw /data
 chmod 700 /data
 
+STATE_DIR="${OPENCLAW_STATE_DIR:-/data/.openclaw}"
+mkdir -p "${STATE_DIR}/credentials"
+chmod 700 "${STATE_DIR}"
+
+export NODE_OPTIONS="--max-old-space-size=2048"
+
 if [ ! -d /data/.linuxbrew ]; then
   cp -a /home/linuxbrew/.linuxbrew /data/.linuxbrew
 fi
