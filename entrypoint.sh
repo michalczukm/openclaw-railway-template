@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
 
-chown -R openclaw:openclaw /data
-chmod 700 /data
-
 STATE_DIR="${OPENCLAW_STATE_DIR:-/data/.openclaw}"
 mkdir -p "${STATE_DIR}/credentials"
 chmod 700 "${STATE_DIR}"
+
+chown -R openclaw:openclaw /data
+chmod 700 /data
 
 export NODE_OPTIONS="--max-old-space-size=2048"
 
